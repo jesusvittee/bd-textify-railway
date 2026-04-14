@@ -1,6 +1,7 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
-const cors = require('cors');require('dotenv').config();
+const cors = require('cors');
+require('dotenv').config();
 
 const app = express();
 app.use(cors());
@@ -13,26 +14,30 @@ const pool = mysql.createPool({
     password: process.env.MYSQLPASSWORD,
     database: process.env.MYSQLDATABASE,
     port: process.env.MYSQLPORT || 3306,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
 });
 
-// Crear tablas con la estructura completa de la App
+// Crear tablas si no existen
 async function initDb() {
     try {
         const conn = await pool.getConnection();
-        // Tabla Usuarios
         await conn.query(`CREATE TABLE IF NOT EXISTS usuarios (id VARCHAR(255) PRIMARY KEY, nombre VARCHAR(255), correo VARCHAR(255) UNIQUE, contrasena VARCHAR(255), fechaRegistro BIGINT, updatedAt BIGINT)`);
-        // Tabla Frases (Añadimos categoria y updatedAt)
         await conn.query(`CREATE TABLE IF NOT EXISTS phrases (id VARCHAR(255) PRIMARY KEY, usuarioId VARCHAR(255), text TEXT, categoria VARCHAR(255), isPinned BOOLEAN, updatedAt BIGINT)`);
-        // Tabla Conversaciones (Añadimos estado, isPinned y updatedAt)
         await conn.query(`CREATE TABLE IF NOT EXISTS conversations (id VARCHAR(255) PRIMARY KEY, usuarioId VARCHAR(255), participantName VARCHAR(255), lastMessage TEXT, lastMessageTime BIGINT, estado VARCHAR(255), isPinned BOOLEAN, updatedAt BIGINT)`);
-        
         conn.release();
-        console.log("✅ Base de datos MySQL sincronizada y tablas listas");
+        console.log("✅ Base de datos MySQL vinculada y tablas listas");
     } catch (err) {
-        console.error("❌ Error en la base de datos:", err.message);
+        console.error("❌ Error inicializando DB:", err.message);
     }
 }
 initDb();
+
+// Ruta de prueba (RAÍZ) - Muy importante para el Health Check de Railway
+app.get('/', (_, res) => {
+    res.send('🚀 Servidor de Textify operando correctamente');
+});
 
 // Endpoint para recibir datos de la App (Push)
 app.post('/api/sync/push', async (req, res) => {
@@ -57,11 +62,10 @@ app.post('/api/sync/push', async (req, res) => {
     }
 });
 
+// USAR EL PUERTO QUE RAILWAY ASIGNA O EL 3000 POR DEFECTO
 const PORT = process.env.PORT || 3000;
 
-// Ruta de prueba (Usamos _ para indicar que req no se usa)
-app.get('/', (_, res) => {
-    res.send('🚀 Servidor de Textify operando correctamente');
+// IMPORTANTE: Escuchar en '0.0.0.0'
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Servidor Textify en puerto ${PORT}`);
 });
-
-app.listen(PORT, () => console.log(`🚀 Servidor Textify en puerto ${PORT}`));
