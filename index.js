@@ -101,26 +101,51 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// --- SINCRONIZACIÓN: SUBIR (PUSH) ---
+// --- SINCRONIZACIÓN: SUBIR (REEMPLAZO TOTAL EN NUBE) ---
 app.post('/api/sync/push', async (req, res) => {
     const { phrases, conversations } = req.body;
-    console.log(`📥 PUSH: Recibidas ${phrases?.length || 0} frases y ${conversations?.length || 0} chats`);
+    
+    // Obtenemos el userId de los datos enviados
+    const userId = (phrases && phrases[0]?.usuarioId) || (conversations && conversations[0]?.usuarioId);
+
+    if (!userId) {
+        return res.status(400).json({ error: "No se proporcionó userId para la sincronización" });
+    }
+
+    console.log(`🔄 PUSH: Reemplazo total para usuario ${userId}. Recibidas ${phrases?.length || 0} frases y ${conversations?.length || 0} chats`);
     
     try {
-        if (phrases) {
-            for (const p of phrases) {
-                await pool.query('INSERT INTO phrases (id, usuarioId, text, categoria, isPinned, updatedAt) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE text=VALUES(text), categoria=VALUES(categoria), isPinned=VALUES(isPinned), updatedAt=VALUES(updatedAt)', 
-                [p.id, p.usuarioId, p.text, p.categoria, p.isPinned, p.updatedAt]);
+        const conn = await pool.getConnection();
+        await conn.beginTransaction(); // Iniciamos transacción para que sea "Todo o Nada"
+
+        try {
+            // 1. Limpiamos lo que había antes en la nube para este usuario
+            await conn.query('DELETE FROM phrases WHERE usuarioId = ?', [userId]);
+            await conn.query('DELETE FROM conversations WHERE usuarioId = ?', [userId]);
+
+            // 2. Insertamos lo nuevo que viene del celular
+            if (phrases && phrases.length > 0) {
+                for (const p of phrases) {
+                    await conn.query('INSERT INTO phrases (id, usuarioId, text, categoria, isPinned, updatedAt) VALUES (?, ?, ?, ?, ?, ?)', 
+                    [p.id, p.usuarioId, p.text, p.categoria, p.isPinned, p.updatedAt]);
+                }
             }
-        }
-        if (conversations) {
-            for (const c of conversations) {
-                await pool.query('INSERT INTO conversations (id, usuarioId, participantName, lastMessage, lastMessageTime, estado, isPinned, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE lastMessage=VALUES(lastMessage), lastMessageTime=VALUES(lastMessageTime), participantName=VALUES(participantName), estado=VALUES(estado), isPinned=VALUES(isPinned), updatedAt=VALUES(updatedAt)', 
-                [c.id, c.usuarioId, c.participantName, c.lastMessage, c.lastMessageTime, c.estado, c.isPinned, c.updatedAt]);
+            if (conversations && conversations.length > 0) {
+                for (const c of conversations) {
+                    await conn.query('INSERT INTO conversations (id, usuarioId, participantName, lastMessage, lastMessageTime, estado, isPinned, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
+                    [c.id, c.usuarioId, c.participantName, c.lastMessage, c.lastMessageTime, c.estado, c.isPinned, c.updatedAt]);
+                }
             }
+
+            await conn.commit();
+            console.log("✅ PUSH completado: Nube actualizada con éxito");
+            res.json({ success: true, timestamp: Date.now() });
+        } catch (dbErr) {
+            await conn.rollback();
+            throw dbErr;
+        } finally {
+            conn.release();
         }
-        console.log("✅ PUSH completado con éxito");
-        res.json({ success: true, timestamp: Date.now() });
     } catch (err) {
         console.error("❌ Error en PUSH:", err.message);
         res.status(500).json({ error: err.message });
@@ -130,11 +155,13 @@ app.post('/api/sync/push', async (req, res) => {
 // --- SINCRONIZACIÓN: BAJAR (PULL) ---
 app.get('/api/sync/pull', async (req, res) => {
     const lastSync = req.query.lastSync || 0;
-    console.log(`📤 PULL: Buscando datos nuevos desde timestamp: ${lastSync}`);
+    const userId = req.query.userId; // Asegúrate de que la App envíe el userId en los parámetros
+    
+    console.log(`📤 PULL: Buscando datos para usuario: ${userId} desde timestamp: ${lastSync}`);
     
     try {
-        const [phrases] = await pool.query('SELECT * FROM phrases WHERE updatedAt > ?', [lastSync]);
-        const [convs] = await pool.query('SELECT * FROM conversations WHERE updatedAt > ?', [lastSync]);
+        const [phrases] = await pool.query('SELECT * FROM phrases WHERE usuarioId = ? AND updatedAt >= ?', [userId, lastSync]);
+        const [convs] = await pool.query('SELECT * FROM conversations WHERE usuarioId = ? AND updatedAt >= ?', [userId, lastSync]);
         
         console.log(`✅ PULL: Enviando ${phrases.length} frases y ${convs.length} chats a la App`);
         res.json({ 
