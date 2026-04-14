@@ -5,21 +5,22 @@ require('dotenv').config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
-
-// Conexión a MySQL usando las variables de Railway
+app.use(express.json());// Conexión mejorada con soporte SSL para Railway
 const pool = mysql.createPool({
     host: process.env.MYSQLHOST,
     user: process.env.MYSQLUSER,
     password: process.env.MYSQLPASSWORD,
     database: process.env.MYSQLDATABASE,
     port: process.env.MYSQLPORT || 3306,
+    ssl: {
+        rejectUnauthorized: false
+    },
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
 });
 
-// Crear tablas si no existen
+// Inicializar DB con logs de error más claros
 async function initDb() {
     try {
         const conn = await pool.getConnection();
@@ -27,64 +28,48 @@ async function initDb() {
         await conn.query(`CREATE TABLE IF NOT EXISTS phrases (id VARCHAR(255) PRIMARY KEY, usuarioId VARCHAR(255), text TEXT, categoria VARCHAR(255), isPinned BOOLEAN, updatedAt BIGINT)`);
         await conn.query(`CREATE TABLE IF NOT EXISTS conversations (id VARCHAR(255) PRIMARY KEY, usuarioId VARCHAR(255), participantName VARCHAR(255), lastMessage TEXT, lastMessageTime BIGINT, estado VARCHAR(255), isPinned BOOLEAN, updatedAt BIGINT)`);
         conn.release();
-        console.log("✅ Base de datos MySQL vinculada y tablas listas");
+        console.log("✅ MySQL conectado y tablas verificadas");
     } catch (err) {
-        console.error("❌ Error inicializando DB:", err.message);
+        console.error("❌ Error de conexión DB:", err.message);
     }
 }
 initDb();
 
-// Ruta de prueba (RAÍZ)
-app.get('/', (_, res) => {
-    res.send('🚀 Servidor de Textify operando correctamente');
-});
+app.get('/', (_, res) => res.send('🚀 Servidor Textify Activo'));
 
-// --- ENDPOINTS DE AUTENTICACIÓN ---
-
-// Registro de usuario
+// Registro
 app.post('/api/auth/register', async (req, res) => {
     const { nombre, correo, contrasena } = req.body;
-    const id = Date.now().toString(); 
+    const id = Date.now().toString();
     try {
         await pool.query(
-            'INSERT INTO usuarios (id, nombre, correo, contrasena, fechaRegistro, updatedAt) VALUES (?, ?, ?, ?, ?, ?)', 
+            'INSERT INTO usuarios (id, nombre, correo, contrasena, fechaRegistro, updatedAt) VALUES (?, ?, ?, ?, ?, ?)',
             [id, nombre, correo, contrasena, Date.now(), Date.now()]
         );
-        console.log(`👤 Usuario registrado: ${correo}`);
-        res.json({ 
-            token: "token_seguro_textify", 
-            userId: id, 
-            nombre: nombre 
-        });
+        res.json({ token: "token_ok", userId: id, nombre: nombre });
     } catch (err) {
-        console.error("❌ Error en registro:", err.message);
-        res.status(500).json({ error: "El correo ya está registrado o hubo un error en el servidor" });
+        console.error("❌ Error Registro:", err.message);
+        res.status(500).json({ error: err.message });
     }
 });
 
-// Inicio de sesión
+// Login
 app.post('/api/auth/login', async (req, res) => {
     const { correo, contrasena } = req.body;
     try {
         const [rows] = await pool.query('SELECT * FROM usuarios WHERE correo = ? AND contrasena = ?', [correo, contrasena]);
         if (rows.length > 0) {
-            const user = rows[0];
-            console.log(`🔑 Login exitoso: ${correo}`);
-            res.json({ 
-                token: "token_seguro_textify", 
-                userId: user.id, 
-                nombre: user.nombre 
-            });
+            res.json({ token: "token_ok", userId: rows[0].id, nombre: rows[0].nombre });
         } else {
-            res.status(401).json({ error: "Correo o contraseña incorrectos" });
+            res.status(401).json({ error: "Credenciales incorrectas" });
         }
     } catch (err) {
-        console.error("❌ Error en login:", err.message);
-        res.status(500).json({ error: "Error interno del servidor" });
+        console.error("❌ Error Login:", err.message);
+        res.status(500).json({ error: err.message });
     }
 });
 
-// --- ENDPOINT DE SINCRONIZACIÓN (PUSH) ---
+// Sync Push
 app.post('/api/sync/push', async (req, res) => {
     const { phrases, conversations } = req.body;
     try {
@@ -102,14 +87,9 @@ app.post('/api/sync/push', async (req, res) => {
         }
         res.json({ success: true, timestamp: Date.now() });
     } catch (err) {
-        console.error("❌ Error en sincronización:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// USAR EL PUERTO QUE RAILWAY ASIGNA
 const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Servidor Textify en puerto ${PORT}`);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Puerto: ${PORT}`));
