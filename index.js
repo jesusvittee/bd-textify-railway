@@ -61,6 +61,51 @@ app.post('/api/sync/push', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// --- NUEVOS ENDPOINTS DE AUTENTICACIÓN ---
+
+// Registro de usuario
+app.post('/api/auth/register', async (req, res) => {
+    const { nombre, correo, contrasena } = req.body;
+    const id = Date.now().toString(); // Generamos un ID simple
+    try {
+        await pool.query(
+            'INSERT INTO usuarios (id, nombre, correo, contrasena, fechaRegistro, updatedAt) VALUES (?, ?, ?, ?, ?, ?)', 
+            [id, nombre, correo, contrasena, Date.now(), Date.now()]
+        );
+        // Enviamos la respuesta que la App espera
+        res.json({ 
+            token: "token_generado_exitosamente", 
+            userId: id, 
+            nombre: nombre 
+        });
+    } catch (err) {
+        console.error("Error en registro:", err.message);
+        res.status(500).json({ error: "El correo ya está registrado o hubo un error en el servidor" });
+    }
+});
+
+// Inicio de sesión
+app.post('/api/auth/login', async (req, res) => {
+    const { correo, contrasena } = req.body;
+    try {
+        const [rows] = await pool.query('SELECT * FROM usuarios WHERE correo = ? AND contrasena = ?', [correo, contrasena]);
+        if (rows.length > 0) {
+            const user = rows[0];
+            res.json({ 
+                token: "token_generado_exitosamente", 
+                userId: user.id, 
+                nombre: user.nombre 
+            });
+        } else {
+            res.status(401).json({ error: "Correo o contraseña incorrectos" });
+        }
+    } catch (err) {
+        console.error("Error en login:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ------------------------------------------
 
 // USAR EL PUERTO QUE RAILWAY ASIGNA O EL 3000 POR DEFECTO
 const PORT = process.env.PORT || 3000;
