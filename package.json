@@ -1,11 +1,16 @@
 {
   "name": "textify-backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "Backend para sincronización de Textify",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "mysql2": "^3.11.4"
   },
   "keywords": [],
   "author": "",
