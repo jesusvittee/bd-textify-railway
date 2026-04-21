@@ -14,9 +14,7 @@ const dbConfig = {
     password: process.env.MYSQLPASSWORD,
     database: process.env.MYSQLDATABASE,
     port: process.env.MYSQLPORT || 3306,
-    ssl: {
-        rejectUnauthorized: false
-    },
+    ssl: { rejectUnauthorized: false },
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
@@ -45,7 +43,8 @@ async function initDb() {
             text TEXT, 
             categoria VARCHAR(255), 
             isPinned BOOLEAN, 
-            updatedAt BIGINT
+            updatedAt BIGINT,
+            INDEX(usuarioId)
         )`);
 
         await conn.query(`CREATE TABLE IF NOT EXISTS conversations (
@@ -56,7 +55,8 @@ async function initDb() {
             lastMessageTime BIGINT, 
             estado VARCHAR(255), 
             isPinned BOOLEAN, 
-            updatedAt BIGINT
+            updatedAt BIGINT,
+            INDEX(usuarioId)
         )`);
 
         console.log("✅ Servidor listo y conectado a MySQL");
@@ -73,13 +73,13 @@ app.get('/', (req, res) => res.send('🚀 Servidor Textify Operativo'));
 
 app.post('/api/auth/register', async (req, res) => {
     const { nombre, correo, contrasena } = req.body;
-    const id = Date.now().toString();
+    const id = Date.now().toString(); // Generamos el PK único para este usuario
     try {
         await pool.query(
             'INSERT INTO usuarios (id, nombre, correo, contrasena, fechaRegistro, updatedAt) VALUES (?, ?, ?, ?, ?, ?)',
             [id, nombre, correo, contrasena, Date.now(), Date.now()]
         );
-        console.log(`👤 Registro nuevo: ${correo}`);
+        console.log(`👤 Nuevo usuario registrado: ${correo} (ID: ${id})`);
         res.json({ token: "token_ok", userId: id, nombre: nombre });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -91,8 +91,9 @@ app.post('/api/auth/login', async (req, res) => {
     try {
         const [rows] = await pool.query('SELECT * FROM usuarios WHERE correo = ? AND contrasena = ?', [correo, contrasena]);
         if (rows.length > 0) {
-            console.log(`🔑 Login: ${correo}`);
-            res.json({ token: "token_ok", userId: rows[0].id, nombre: rows[0].nombre });
+            const user = rows[0];
+            console.log(`🔑 Login exitoso: ${user.correo} (ID: ${user.id})`);
+            res.json({ token: "token_ok", userId: user.id, nombre: user.nombre });
         } else {
             res.status(401).json({ error: "Credenciales inválidas" });
         }
@@ -101,44 +102,45 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// --- SINCRONIZACIÓN: SUBIR (REEMPLAZO TOTAL EN NUBE) ---
+// --- SINCRONIZACIÓN: SUBIR (ESPEJO TOTAL EN NUBE) ---
 app.post('/api/sync/push', async (req, res) => {
-    const { phrases, conversations } = req.body;
+    const { userId, phrases, conversations } = req.body;
     
-    // Obtenemos el userId de los datos enviados
-    const userId = (phrases && phrases[0]?.usuarioId) || (conversations && conversations[0]?.usuarioId);
+    // Identificamos al usuario. Si no viene en el body, lo buscamos en los objetos.
+    const finalUserId = userId || (phrases && phrases[0]?.usuarioId) || (conversations && conversations[0]?.usuarioId);
 
-    if (!userId) {
-        return res.status(400).json({ error: "No se proporcionó userId para la sincronización" });
+    if (!finalUserId || finalUserId === "default_user") {
+        console.log("⚠️ Intento de sincronización bloqueado: ID inválido o genérico.");
+        return res.status(400).json({ error: "Falta identificación de usuario real." });
     }
 
-    console.log(`🔄 PUSH: Reemplazo total para usuario ${userId}. Recibidas ${phrases?.length || 0} frases y ${conversations?.length || 0} chats`);
+    console.log(`🔄 PUSH (Espejo): Reemplazando datos en nube para usuario ${finalUserId}`);
     
     try {
         const conn = await pool.getConnection();
-        await conn.beginTransaction(); // Iniciamos transacción para que sea "Todo o Nada"
+        await conn.beginTransaction();
 
         try {
-            // 1. Limpiamos lo que había antes en la nube para este usuario
-            await conn.query('DELETE FROM phrases WHERE usuarioId = ?', [userId]);
-            await conn.query('DELETE FROM conversations WHERE usuarioId = ?', [userId]);
+            // 1. Limpieza total de lo que este usuario tenía en la nube
+            await conn.query('DELETE FROM phrases WHERE usuarioId = ?', [finalUserId]);
+            await conn.query('DELETE FROM conversations WHERE usuarioId = ?', [finalUserId]);
 
-            // 2. Insertamos lo nuevo que viene del celular
+            // 2. Inserción de lo nuevo forzando el userId correcto
             if (phrases && phrases.length > 0) {
                 for (const p of phrases) {
                     await conn.query('INSERT INTO phrases (id, usuarioId, text, categoria, isPinned, updatedAt) VALUES (?, ?, ?, ?, ?, ?)', 
-                    [p.id, p.usuarioId, p.text, p.categoria, p.isPinned, p.updatedAt]);
+                    [p.id, finalUserId, p.text, p.categoria, p.isPinned, p.updatedAt]);
                 }
             }
             if (conversations && conversations.length > 0) {
                 for (const c of conversations) {
                     await conn.query('INSERT INTO conversations (id, usuarioId, participantName, lastMessage, lastMessageTime, estado, isPinned, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
-                    [c.id, c.usuarioId, c.participantName, c.lastMessage, c.lastMessageTime, c.estado, c.isPinned, c.updatedAt]);
+                    [c.id, finalUserId, c.participantName, c.lastMessage, c.lastMessageTime, c.estado, c.isPinned, c.updatedAt]);
                 }
             }
 
             await conn.commit();
-            console.log("✅ PUSH completado: Nube actualizada con éxito");
+            console.log(`✅ PUSH exitoso: Nube actualizada para usuario ${finalUserId}`);
             res.json({ success: true, timestamp: Date.now() });
         } catch (dbErr) {
             await conn.rollback();
@@ -152,18 +154,22 @@ app.post('/api/sync/push', async (req, res) => {
     }
 });
 
-// --- SINCRONIZACIÓN: BAJAR (PULL) ---
+// --- SINCRONIZACIÓN: BAJAR (ESPEJO TOTAL EN APP) ---
 app.get('/api/sync/pull', async (req, res) => {
-    const lastSync = req.query.lastSync || 0;
-    const userId = req.query.userId; // Asegúrate de que la App envíe el userId en los parámetros
+    const userId = req.query.userId;
     
-    console.log(`📤 PULL: Buscando datos para usuario: ${userId} desde timestamp: ${lastSync}`);
+    if (!userId || userId === "default_user") {
+        return res.status(400).json({ error: "Se requiere un ID de usuario real para descargar." });
+    }
+    
+    console.log(`📤 PULL: Buscando datos guardados para usuario: ${userId}`);
     
     try {
-        const [phrases] = await pool.query('SELECT * FROM phrases WHERE usuarioId = ? AND updatedAt >= ?', [userId, lastSync]);
-        const [convs] = await pool.query('SELECT * FROM conversations WHERE usuarioId = ? AND updatedAt >= ?', [userId, lastSync]);
+        // Traemos todo lo que este usuario específico tenga en la nube
+        const [phrases] = await pool.query('SELECT * FROM phrases WHERE usuarioId = ?', [userId]);
+        const [convs] = await pool.query('SELECT * FROM conversations WHERE usuarioId = ?', [userId]);
         
-        console.log(`✅ PULL: Enviando ${phrases.length} frases y ${convs.length} chats a la App`);
+        console.log(`✅ PULL exitoso: Enviando ${phrases.length} frases y ${convs.length} chats a usuario ${userId}`);
         res.json({ 
             phrases: phrases, 
             conversations: convs 
@@ -176,5 +182,5 @@ app.get('/api/sync/pull', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Servidor Textify listo en puerto ${PORT}`);
+    console.log(`🚀 Servidor Textify dinámico listo en puerto ${PORT}`);
 });
